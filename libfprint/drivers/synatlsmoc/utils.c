@@ -195,7 +195,7 @@ cmd_to_str (guint8 cmd)
       ret = "VCSFW_CMD_PAIR";
       break;
     case 0x96:
-      ret = "VCSFW_CMD_ENROLL";
+      ret = "VCSFW_CMD_ENROLL_WBF";
       break;
     case 0x99:
       ret = "VCSFW_CMD_IDENTIFY_WBF";
@@ -227,10 +227,9 @@ cmd_to_str (guint8 cmd)
     case 0xa5:
       ret = "VCSFW_CMD_DB2_FORMAT";
       break;
-    /* case 0xa6:
-     *    ret = "yet unnamed cmd";
-     *    break;
-     */
+    case 0xa6:
+      ret = "VCSFW_CMD_MSBM_CONNECT";
+      break;
     case 0xaa:
       ret = "VCSFW_CMD_RESET_SBL_MODE";
       break;

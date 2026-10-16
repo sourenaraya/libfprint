@@ -1672,7 +1672,7 @@ send_pair (FpiDeviceSynaTlsMoc *self,
                        recv_pair);
 }
 
-/* VCSFW_CMD_ENROLL ======================================================== */
+/* VCSFW_CMD_ENROLL_WBF ==================================================== */
 
 static void
 recv_enroll_start (FpDevice *device, guint8 *buffer_in, gsize length_in, GError *error)
@@ -1731,7 +1731,7 @@ send_enroll_start (FpiDeviceSynaTlsMoc *self)
   fpi_byte_writer_init_with_size (&writer, send_size, TRUE);
 
   gboolean written = TRUE;
-  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL);
+  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL_WBF);
   written &= fpi_byte_writer_put_uint32_le (&writer, ENROLL_SUBCMD_START);
   written &= fpi_byte_writer_put_uint32_le (&writer, nonce_buffer_size != 0);
   written &= fpi_byte_writer_put_uint32_le (&writer, nonce_buffer_size);
@@ -1901,7 +1901,7 @@ send_add_image (FpiDeviceSynaTlsMoc *self)
   fpi_byte_writer_init_with_size (&writer, send_size, TRUE);
 
   gboolean written = TRUE;
-  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL);
+  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL_WBF);
   written &= fpi_byte_writer_put_uint32_le (&writer, ENROLL_SUBCMD_ADD_IMAGE);
 
   FAIL_TASK_SSM_AND_RETURN_IF_NOT_WRITTEN (written);
@@ -1930,7 +1930,7 @@ send_enroll_commit (FpiDeviceSynaTlsMoc *self,
   fpi_byte_writer_init_with_size (&writer, send_size, TRUE);
 
   gboolean written = TRUE;
-  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL);
+  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL_WBF);
   written &= fpi_byte_writer_put_uint32_le (&writer, ENROLL_SUBCMD_COMMIT);
   written &= fpi_byte_writer_put_uint32_le (&writer, 0);
   written &= fpi_byte_writer_put_uint32_le (&writer, enroll_commit_data_size);
@@ -1959,7 +1959,7 @@ send_enroll_finish (FpiDeviceSynaTlsMoc *self)
   fpi_byte_writer_init_with_size (&writer, send_size, TRUE);
 
   gboolean written = TRUE;
-  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL);
+  written &= fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_ENROLL_WBF);
   written &= fpi_byte_writer_put_uint32_le (&writer, ENROLL_SUBCMD_FINISH);
 
   FAIL_TASK_SSM_AND_RETURN_IF_NOT_WRITTEN (written);
