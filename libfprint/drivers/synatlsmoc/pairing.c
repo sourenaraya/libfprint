@@ -166,11 +166,10 @@ create_host_certificate (EVP_PKEY *server_key,
 
   /* add padding */
   written &= fpi_byte_writer_put_uint8 (&writer, 0);
-  /* put certificate type. 2 = host (matches the Windows driver); 0 is the
-   * sensor's own type. Using 0 files the host into a separate template
-   * world, so templates it enrolls are invisible to the pre-boot (UEFI)
-   * driver, which reads the type-2 world. */
-  written &= fpi_byte_writer_put_uint8 (&writer, 2);
+  /* put certificate type. The host sends its own type (0); the sensor's
+   * pairing *echo* of the host cert is type 2 (set by the sensor, not the
+   * host). Forcing 2 here makes the sensor reject the pair (0x403). */
+  written &= fpi_byte_writer_put_uint8 (&writer, 0);
 
   g_assert (fpi_byte_writer_get_pos (&writer) == CERTIFICATE_DATA_SIZE);
   RETURN_FALSE_AND_SET_ERROR_IF_NOT_WRITTEN (written);
