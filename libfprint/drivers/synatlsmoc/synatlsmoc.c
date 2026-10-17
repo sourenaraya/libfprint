@@ -108,6 +108,7 @@ struct _FpiDeviceSynaTlsMoc
   /* quirks */
   gboolean disable_image_metrics;
   gboolean has_leds;
+  gboolean led_profile_b;
 
   /* VCSFW_CMD_LED_EX2 */
   guint led_event;
@@ -132,6 +133,9 @@ static const FpIdEntry id_table[] = {
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00D8, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00E7, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00E9, },
+    { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00F9,
+      .driver_data = SYNATLSMOC_DRIVER_DATA_HAS_LED |
+                     SYNATLSMOC_DRIVER_DATA_LED_PROFILE_B, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00FF, },
     // { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0124, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x0169, },
@@ -498,7 +502,13 @@ typedef struct
 #define LED_IDLE_ACTION LED_ACTION (0x0000, 0x20000000, 0x00000000, 0x00000000)
 #define LED_ZERO_ACTION LED_ACTION (0x0000, 0x00000000, 0x00000000, 0x00000000)
 
-static const LedProfile led_profiles[] = {
+/* LED_EX2 default profiles, per sensor (vid:pid), not per driver build. The
+   0x7d-byte command and layout are identical for both; only the action values
+   differ. Profile A is the series-123 table (047d:8054, 06cb:00d6); Profile B
+   is the series-154 table (byte-identical in series 136) used by 06cb:00f9.
+   See rev/notes/led-ex2-default-profiles.md in the synaTudorMiS repo. */
+
+static const LedProfile led_profiles_a[] = {
   [LED_EVENT_IDLE] = {
       0,
       { LED_IDLE_ACTION, LED_IDLE_ACTION, LED_IDLE_ACTION,
@@ -561,13 +571,82 @@ static const LedProfile led_profiles[] = {
   },
 };
 
+static const LedProfile led_profiles_b[] = {
+  [LED_EVENT_IDLE] = {
+      0,
+      { LED_IDLE_ACTION, LED_IDLE_ACTION, LED_IDLE_ACTION,
+        LED_IDLE_ACTION, LED_IDLE_ACTION, LED_IDLE_ACTION },
+  },
+  [LED_EVENT_WAITING_FOR_FINGER] = {
+      0,
+      {
+          LED_ACTION (0xffff, 0x20009607, 0x00009696, 0x00000000),
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+      },
+  },
+  [LED_EVENT_ENROLL_ACCEPTED] = {
+      500,
+      {
+          LED_ACTION (0x01f4, 0x20000007, 0x00000000, 0x00000000),
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+      },
+  },
+  [LED_EVENT_ENROLL_REJECTED] = {
+      1000,
+      {
+          LED_ACTION (0x00a6, 0x20003c01, 0x00000000, 0x00003c3c),
+          LED_ACTION (0x00a6, 0x20000001, 0x00000000, 0x00000000),
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_ZERO_ACTION,
+          LED_ZERO_ACTION,
+      },
+  },
+  [LED_EVENT_MATCH_SUCCESS] = {
+      500,
+      {
+          LED_ACTION (0x01f4, 0x20000007, 0x00000000, 0x00000000),
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+      },
+  },
+  [LED_EVENT_MATCH_FAILURE] = {
+      1000,
+      {
+          LED_ACTION (0x00a6, 0x20003c01, 0x00000000, 0x00003c3c),
+          LED_ACTION (0x00a6, 0x20000001, 0x00000000, 0x00000000),
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+          LED_IDLE_ACTION,
+      },
+  },
+};
+
+static const LedProfile *
+led_profiles_for (FpiDeviceSynaTlsMoc *self)
+{
+  return self->led_profile_b ? led_profiles_b : led_profiles_a;
+}
+
 static void recv_led_event (FpDevice *device, guint8 *buffer_in,
                             gsize length_in, GError *error);
 
 static void
 send_led_event_command (FpiDeviceSynaTlsMoc *self)
 {
-  const LedProfile *profile = &led_profiles[self->led_event];
+  const LedProfile *profile = &led_profiles_for (self)[self->led_event];
   const guint send_size = 1 + sizeof (guint32) + (6 * 0x14);
   const guint expected_recv_size = SENSOR_FW_REPLY_STATUS_HEADER_LEN;
   FpiByteWriter writer;
@@ -613,7 +692,8 @@ send_led_event (FpiDeviceSynaTlsMoc *self, guint event, guint next_state)
   if (self->led_last_event != LED_EVENT_WAITING_FOR_FINGER)
     {
       gint64 elapsed_ms = (g_get_monotonic_time () - self->led_last_time) / 1000;
-      gint64 duration_ms = led_profiles[self->led_last_event].duration_ms;
+      gint64 duration_ms =
+          led_profiles_for (self)[self->led_last_event].duration_ms;
 
       if (elapsed_ms < duration_ms)
         {
@@ -3923,6 +4003,8 @@ synatlsmoc_open (FpDevice *device)
 
   self->has_leds = (fpi_device_get_driver_data (device) &
                     SYNATLSMOC_DRIVER_DATA_HAS_LED) != 0;
+  self->led_profile_b = (fpi_device_get_driver_data (device) &
+                         SYNATLSMOC_DRIVER_DATA_LED_PROFILE_B) != 0;
 
   if (self->session == NULL && !g_usb_device_reset (
                                    fpi_device_get_usb_device (device), &error))
