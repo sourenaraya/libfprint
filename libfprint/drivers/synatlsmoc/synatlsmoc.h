@@ -39,6 +39,9 @@ G_DECLARE_FINAL_TYPE (FpiDeviceSynaTlsMoc, fpi_device_synatlsmoc, FPI, DEVICE_SY
 #define KENSINGTON_VENDOR_ID 0x047d
 
 #define SYNATLSMOC_DRIVER_DATA_HAS_LED 1
+/* the sensor needs the LED_EX2 "Profile B" table (see led_profiles_b) instead
+   of the default (Profile A); the table is a per-sensor property */
+#define SYNATLSMOC_DRIVER_DATA_LED_PROFILE_B 2
 
 #define SYNATLSMOC_EP_CMD_OUT (0x1 | FPI_USB_ENDPOINT_OUT)
 #define SYNATLSMOC_EP_RESP_IN (0x1 | FPI_USB_ENDPOINT_IN)
