@@ -27,12 +27,15 @@
 #define FP_COMPONENT "synatlsmoc"
 
 #include <glib.h>
+#include <openssl/bn.h>
+#include <openssl/core_names.h>
 #include <openssl/decoder.h>
 #include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 
 #include "fpi-byte-reader.h"
 #include "fpi-byte-writer.h"
@@ -41,6 +44,7 @@
 #include "fpi-ssm.h"
 #include "fpi-usb-transfer.h"
 #include "pairing.h"
+#include "preboot_record.h"
 #include "sample_pairing_data.h"
 #include "sensor_public_keys.h"
 #include "synatlsmoc.h"
@@ -90,6 +94,14 @@ struct _FpiDeviceSynaTlsMoc
   guint8 provision_state;
 
   SensorPairingData pairing_data;
+
+  /* pre-boot host-partition record write (fresh pairing only): the partition
+   * read back so we can retain its tag4 SEC blob + version, and a flag set on
+   * fresh pairing so the record is (re)written for the new identity */
+  guint8 *preboot_partition;
+  gsize preboot_partition_len;
+  gboolean preboot_record_needs_write;
+
   /* NOTE: host/this driver is the client, sensor is server */
   TlsSession *session;
   gboolean session_out_of_sync;
@@ -1252,6 +1264,233 @@ send_tls_data (FpiDeviceSynaTlsMoc *self, guint8 *tdata, gsize tdata_size)
 
   synatlsmoc_exec_cmd (self, TRUE, FALSE, send_data, send_size,
                        expected_recv_size, recv_tls_data);
+}
+
+/* VCSFW_CMD_STORAGE_PART_READ / WRITE — pre-boot host-partition record =====
+ * TLS-wrapped (raw=FALSE) after the TLS session is up. The 4KB host partition
+ * holds the UEFI pre-boot record (offset 76); we read it to retain the
+ * sensor-static tag4 SEC blob, then write a new W-form record for the new
+ * pairing identity.
+ */
+
+#define PREBOOT_HOST_PART_ID 2    /* VCSFW_STORAGE_TUDOR_PART_ID_HOST */
+#define PREBOOT_HOST_PART_SIZE 0x1000
+#define PREBOOT_RECORD_OFFSET 76  /* record starts at 76 in the partition */
+
+static void
+recv_preboot_record_read (FpDevice *device, guint8 *buffer_in, gsize length_in, GError *error)
+{
+  FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
+
+  /* best-effort: on any failure, skip the record write (do not fail the open) */
+  if (error)
+    {
+      fp_warn ("Pre-boot record: host partition read failed");
+      fpi_ssm_jump_to_state (self->task_ssm, OPEN_SET_EVENT_MASK);
+      return;
+    }
+
+  guint16 status = FP_READ_UINT16_LE (buffer_in);
+  if (!status_is_success (status))
+    {
+      fp_warn ("Pre-boot record: read status %s", status_to_str (status));
+      fpi_ssm_jump_to_state (self->task_ssm, OPEN_SET_EVENT_MASK);
+      return;
+    }
+
+  /* response: [2B status][4B size][2B pad][4096B data] */
+  if (length_in <= PREBOOT_RECORD_OFFSET)
+    {
+      fp_warn ("Pre-boot record: read response too short");
+      fpi_ssm_jump_to_state (self->task_ssm, OPEN_SET_EVENT_MASK);
+      return;
+    }
+
+  g_clear_pointer (&self->preboot_partition, g_free);
+  self->preboot_partition =
+      g_memdup2 (buffer_in + 8, length_in - 8);
+  self->preboot_partition_len = length_in - 8;
+
+  fpi_ssm_next_state (self->task_ssm);
+}
+
+static void
+recv_preboot_record_write (FpDevice *device, guint8 *buffer_in, gsize length_in, GError *error)
+{
+  FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
+
+  /* best-effort: a write failure must not fail the open */
+  if (error)
+    {
+      fp_warn ("Pre-boot record: write failed");
+      fpi_ssm_next_state (self->task_ssm); /* -> OPEN_SET_EVENT_MASK */
+      return;
+    }
+
+  guint16 status = FP_READ_UINT16_LE (buffer_in);
+  if (!status_is_success (status))
+    {
+      fp_warn ("Pre-boot record: write status %s", status_to_str (status));
+      fpi_ssm_next_state (self->task_ssm); /* -> OPEN_SET_EVENT_MASK */
+      return;
+    }
+
+  fp_info ("Pre-boot record: host partition written");
+  fpi_ssm_next_state (self->task_ssm); /* -> OPEN_SET_EVENT_MASK */
+}
+
+static void
+send_preboot_record_read (FpiDeviceSynaTlsMoc *self)
+{
+  /* [1B cmd][1B part_id][1B param][2B 0xFFFF][4B offset][4B size] */
+  FpiByteWriter writer;
+  fpi_byte_writer_init (&writer);
+  fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_STORAGE_PART_READ);
+  fpi_byte_writer_put_uint8 (&writer, PREBOOT_HOST_PART_ID);
+  fpi_byte_writer_put_uint8 (&writer, 0);
+  fpi_byte_writer_put_uint16_le (&writer, 0xFFFF);
+  fpi_byte_writer_put_uint32_le (&writer, 0);                 /* offset */
+  fpi_byte_writer_put_uint32_le (&writer, PREBOOT_HOST_PART_SIZE); /* size */
+
+  gsize send_size = fpi_byte_writer_get_pos (&writer);
+  g_autofree guint8 *cmd = fpi_byte_writer_reset_and_get_data (&writer);
+
+  /* response = [2B status][4B size][2B pad][4096B data] */
+  synatlsmoc_exec_cmd (self, FALSE, FALSE, cmd, send_size,
+                       PREBOOT_HOST_PART_SIZE + 8, recv_preboot_record_read);
+}
+
+static void
+send_preboot_record_write (FpiDeviceSynaTlsMoc *self, const guint8 *data, gsize data_len)
+{
+  /* [1B cmd][1B part_id][1B param][2B 0xFFFF][4B offset][4B size][data] */
+  FpiByteWriter writer;
+  fpi_byte_writer_init (&writer);
+  fpi_byte_writer_put_uint8 (&writer, VCSFW_CMD_STORAGE_PART_WRITE);
+  fpi_byte_writer_put_uint8 (&writer, PREBOOT_HOST_PART_ID);
+  fpi_byte_writer_put_uint8 (&writer, 0);
+  fpi_byte_writer_put_uint16_le (&writer, 0xFFFF);
+  fpi_byte_writer_put_uint32_le (&writer, 0);      /* offset */
+  fpi_byte_writer_put_uint32_le (&writer, data_len); /* size */
+  fpi_byte_writer_put_data (&writer, data, data_len);
+
+  gsize send_size = fpi_byte_writer_get_pos (&writer);
+  g_autofree guint8 *cmd = fpi_byte_writer_reset_and_get_data (&writer);
+
+  /* response = [2B status][4B written] */
+  synatlsmoc_exec_cmd (self, FALSE, FALSE, cmd, send_size, 6,
+                       recv_preboot_record_write);
+}
+
+/* Assemble and write the pre-boot record for the current pairing identity,
+ * retaining tag4 (and the version) from the existing partition. Best-effort:
+ * any failure just skips the write and continues the open. */
+static void
+preboot_record_write (FpiDeviceSynaTlsMoc *self, FpiSsm *ssm)
+{
+  GError *error = NULL;
+
+  if (self->preboot_partition == NULL ||
+      self->preboot_partition_len <= PREBOOT_RECORD_OFFSET)
+    {
+      fp_warn ("Pre-boot record: no partition to build from");
+      fpi_ssm_next_state (ssm); /* -> OPEN_SET_EVENT_MASK */
+      return;
+    }
+
+  const guint8 *part = self->preboot_partition;
+  guint16 record_len = FP_READ_UINT16_LE (part + 42);
+  const guint8 *record = part + PREBOOT_RECORD_OFFSET;
+  if (record_len < 64 ||
+      (gsize) PREBOOT_RECORD_OFFSET + record_len > self->preboot_partition_len)
+    {
+      fp_warn ("Pre-boot record: existing record too short (%u)",
+               (unsigned) record_len);
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  /* key2_stable from DMI (fprintd runs as root; product_serial is root-only) */
+  g_autofree guint8 *key2 = NULL;
+  gsize key2_len = 0;
+  if (!preboot_synthesize_key2 ("/sys/class/dmi/id", &key2, &key2_len, &error))
+    {
+      fp_warn ("Pre-boot record: cannot synthesize key2 from DMI: %s",
+               error ? error->message : "unknown");
+      g_clear_error (&error);
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  /* retain the sensor-static tag4 SEC blob from the existing (W-form) record */
+  g_autofree guint8 *sec_blob = NULL;
+  gsize sec_blob_len = 0;
+  if (!preboot_record_extract_sec_blob (record, record_len, key2, key2_len,
+                                        &sec_blob, &sec_blob_len, &error))
+    {
+      fp_warn ("Pre-boot record: no usable existing record: %s",
+               error ? error->message : "not W-form / no tag4");
+      g_clear_error (&error);
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  /* tag2: the host identity's 32B private scalar (LE) from the client key */
+  guint8 host_scalar[ECC_KEY_SIZE];
+  g_autoptr (BIGNUM) d_bn = BN_new ();
+  if (d_bn == NULL ||
+      EVP_PKEY_get_bn_param (self->pairing_data.client_key,
+                             OSSL_PKEY_PARAM_PRIV_KEY, &d_bn) != 1 ||
+      BN_bn2binpad (d_bn, host_scalar, ECC_KEY_SIZE) != (int) ECC_KEY_SIZE)
+    {
+      fp_warn ("Pre-boot record: cannot read host private scalar");
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+  reverse_array (host_scalar, ECC_KEY_SIZE); /* BE -> LE */
+
+  guint8 iv[16];
+  if (RAND_bytes (iv, sizeof (iv)) != 1)
+    {
+      fp_warn ("Pre-boot record: IV generation failed");
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  g_autofree guint8 *new_record = NULL;
+  gsize new_record_len = 0;
+  if (!preboot_record_build (host_scalar, ECC_KEY_SIZE,
+                             self->pairing_data.client_cert_raw,
+                             CERTIFICATE_SIZE,
+                             sec_blob, sec_blob_len,
+                             self->pairing_data.server_cert_raw,
+                             CERTIFICATE_SIZE,
+                             key2, key2_len, iv, &new_record, &new_record_len,
+                             &error))
+    {
+      fp_warn ("Pre-boot record: build failed: %s",
+               error ? error->message : "unknown");
+      g_clear_error (&error);
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  /* retain the existing version (the 4B u32 tag1 value @36 in the container) */
+  guint8 version[4] = { 1, 0, 0, 0 };
+  memcpy (version, part + 36, 4);
+
+  gsize container_len = 0;
+  guint8 *container =
+      preboot_container_build (version, new_record, new_record_len, &container_len);
+  if (container == NULL)
+    {
+      fp_warn ("Pre-boot record: container build failed");
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  send_preboot_record_write (self, container, container_len);
+  g_free (container); /* exec_cmd already copied it into the transfer */
 }
 
 /* VCSFW_CMD_FRAME_ACQ ===================================================== */
@@ -3816,6 +4055,14 @@ fetch_pairing_data (FpiDeviceSynaTlsMoc *self)
       if (!synatlsmoc_is_provisioned (self))
         fp_info ("Sensor is not provisioned");
 
+      if (pairing_data == NULL)
+        {
+          /* fresh pairing: a new identity is about to be created, so the
+           * pre-boot record (written under the identity) must be (re)written
+           * to match it. Flash-constrained: only this path writes. */
+          self->preboot_record_needs_write = TRUE;
+        }
+
       fp_info ("Need to pair sensor");
       fpi_ssm_next_state (self->task_ssm); /* OPEN_SEND_PAIR */
     }
@@ -3841,6 +4088,8 @@ synatlsmoc_open_done (FpiSsm *ssm, FpDevice *device, GError *error)
   FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
 
   free_pairing_data (&self->pairing_data);
+  g_clear_pointer (&self->preboot_partition, g_free);
+  self->preboot_partition_len = 0;
   if (error)
     {
       synatlsmoc_drop_session (self);
@@ -3979,6 +4228,23 @@ synatlsmoc_open_run_state (FpiSsm *ssm, FpDevice *device)
         send_tls_data (self, tls_data, tls_data_len);
         break;
       }
+    case OPEN_PREBOOT_RECORD_READ:
+      {
+        /* fresh pairing only: on a loaded pairing the record already matches
+         * the identity, so skip the sensor read (conserve flash) */
+        if (!self->preboot_record_needs_write)
+          {
+            fpi_ssm_jump_to_state (ssm, OPEN_SET_EVENT_MASK);
+            break;
+          }
+        send_preboot_record_read (self);
+        break;
+      }
+    case OPEN_PREBOOT_RECORD_WRITE:
+      {
+        preboot_record_write (self, ssm);
+        break;
+      }
     case OPEN_SET_EVENT_MASK:
       {
         send_event_config (self, NO_EVENTS);
@@ -4005,6 +4271,9 @@ synatlsmoc_open (FpDevice *device)
                     SYNATLSMOC_DRIVER_DATA_HAS_LED) != 0;
   self->led_profile_b = (fpi_device_get_driver_data (device) &
                          SYNATLSMOC_DRIVER_DATA_LED_PROFILE_B) != 0;
+
+  /* the record write flag is set only during this open's fresh pairing */
+  self->preboot_record_needs_write = FALSE;
 
   if (self->session == NULL && !g_usb_device_reset (
                                    fpi_device_get_usb_device (device), &error))

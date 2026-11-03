@@ -344,6 +344,11 @@ typedef enum
   OPEN_VERIFY_SENSOR_CERTIFICATE,
   OPEN_TLS_ESTABLISH,
   OPEN_TLS_SEND_DATA,
+  /* pre-boot host-partition record: read the 4KB partition, then (re)write the
+   * W-form record for the new pairing identity so the UEFI pre-boot .efi can
+   * verify it. Runs only on fresh pairing to conserve the sensor's flash. */
+  OPEN_PREBOOT_RECORD_READ,
+  OPEN_PREBOOT_RECORD_WRITE,
   OPEN_SET_EVENT_MASK,
   OPEN_NUM_STATES,
 } OpenState;
