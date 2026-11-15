@@ -270,6 +270,7 @@ usb:v06CBp019D*
 
 # Supported by libfprint driver synatlsmoc
 usb:v047Dp8054*
+usb:v06CBp00BE*
 usb:v06CBp00C9*
 usb:v06CBp00D1*
 usb:v06CBp00D6*
@@ -386,7 +387,6 @@ usb:v06CBp00A2*
 usb:v06CBp00A8*
 usb:v06CBp00B7*
 usb:v06CBp00BB*
-usb:v06CBp00BE*
 usb:v06CBp00CB*
 usb:v06CBp00DA*
 usb:v06CBp00DC*

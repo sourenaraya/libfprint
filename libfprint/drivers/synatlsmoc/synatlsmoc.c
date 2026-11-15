@@ -128,6 +128,7 @@ static const FpIdEntry id_table[] = {
     { .vid = KENSINGTON_VENDOR_ID, .pid = 0x8054,
       .driver_data = SYNATLSMOC_DRIVER_DATA_HAS_LED, },
     /* the sensors commented out are untested, but should be suported */
+    { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00BE, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00C9, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00D1, },
     { .vid = SYNAPTICS_VENDOR_ID,  .pid = 0x00D6,
