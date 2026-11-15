@@ -1,4 +1,4 @@
-
+## You will also need to modify fprintd with [this patch](./libfprint/fprintd-load-store-persistent-data-from-device.patch).
 
 <div align="center">
 
