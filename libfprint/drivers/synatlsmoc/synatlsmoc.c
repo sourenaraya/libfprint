@@ -120,6 +120,11 @@ struct _FpiDeviceSynaTlsMoc
 
   gboolean capture_started;
 
+  /* cancellable for the pending wait-for-events interrupt read, so that
+   * cancel/suspend can abort exactly that in-flight wait (used to release the
+   * claim when a verify is interrupted, e.g. by system sleep) */
+  GCancellable *interrupt_cancellable;
+
   /* quirks */
   gboolean disable_image_metrics;
   gboolean has_leds;
@@ -3829,13 +3834,19 @@ synatlsmoc_wait_for_events (FpiDeviceSynaTlsMoc *self)
   fp_dbg ("Waiting for events...");
 #endif
 
+  /* a dedicated cancellable per wait, so cancel/suspend can abort exactly this
+   * pending interrupt read (the device-wide cancellable is not the right
+   * object for it) */
+  g_clear_object (&self->interrupt_cancellable);
+  self->interrupt_cancellable = g_cancellable_new ();
+
   FpiUsbTransfer *transfer = fpi_usb_transfer_new (FP_DEVICE (self));
   transfer->ssm = self->task_ssm;
   transfer->short_is_error = TRUE;
 
   fpi_usb_transfer_fill_interrupt (transfer, SYNATLSMOC_EP_INTERRUPT, 7);
   fpi_usb_transfer_submit (transfer, SYNATLSMOC_USB_INTERRUPT_TIMEOUT,
-                           fpi_device_get_cancellable (FP_DEVICE (self)),
+                           self->interrupt_cancellable,
                            synatlsmoc_event_interrupt_cb, NULL);
 }
 
@@ -5064,6 +5075,34 @@ synatlsmoc_clear_storage (FpDevice *device)
 }
 
 static void
+synatlsmoc_cancel (FpDevice *device)
+{
+  FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
+
+  fp_dbg ("Cancel");
+
+  /* abort the pending wait-for-events interrupt read so the in-flight action
+   * fails and releases its claim */
+  if (self->interrupt_cancellable)
+    g_cancellable_cancel (self->interrupt_cancellable);
+}
+
+static void
+synatlsmoc_suspend (FpDevice *device)
+{
+  fp_dbg ("Suspend");
+
+  /* abort the in-flight action (if any) and signal readiness to suspend; the
+   * client re-opens the sensor fresh on wake. Cancelling the device-wide
+   * cancellable also aborts any in-flight command transfer. */
+  synatlsmoc_cancel (device);
+  GCancellable *cancellable = fpi_device_get_cancellable (device);
+  if (cancellable)
+    g_cancellable_cancel (cancellable);
+  fpi_device_suspend_complete (device, NULL);
+}
+
+static void
 fpi_device_synatlsmoc_init (FpiDeviceSynaTlsMoc *self)
 {
   G_DEBUG_HERE ();
@@ -5075,6 +5114,8 @@ fpi_device_synatlsmoc_finalize (GObject *object)
   FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (object);
 
   tls_session_free (self->session);
+
+  g_clear_object (&self->interrupt_cancellable);
 
   G_OBJECT_CLASS (fpi_device_synatlsmoc_parent_class)->finalize (object);
 }
@@ -5097,6 +5138,8 @@ fpi_device_synatlsmoc_class_init (FpiDeviceSynaTlsMocClass *klass)
 
   dev_class->open = synatlsmoc_open;
   dev_class->close = synatlsmoc_close;
+  dev_class->cancel = synatlsmoc_cancel;
+  dev_class->suspend = synatlsmoc_suspend;
   dev_class->enroll = synatlsmoc_enroll;
   dev_class->verify = synatlsmoc_identify_verify;
   dev_class->identify = synatlsmoc_identify_verify;
