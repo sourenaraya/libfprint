@@ -462,6 +462,10 @@ synatlsmoc_task_ssm_done (FpiSsm *ssm, FpDevice *device, GError *error)
 #endif
   FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
 
+  /* TEMPORARY diagnostic (stuck-claim-after-sleep): confirm when the in-flight
+   * task completes. */
+  fp_warn ("Task SSM done: %s", error ? error->message : "success");
+
   /* task_ssm is going to be freed by completion of SSM */
   g_assert (!self->task_ssm || self->task_ssm == ssm);
   self->task_ssm = NULL;
@@ -5090,7 +5094,12 @@ synatlsmoc_cancel (FpDevice *device)
 static void
 synatlsmoc_suspend (FpDevice *device)
 {
+  FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
+
   fp_dbg ("Suspend");
+  /* TEMPORARY diagnostic (stuck-claim-after-sleep): confirm the on-sleep
+   * suspend reaches the driver and what task state it sees. */
+  fp_warn ("Suspend: task_ssm=%p", (void *) self->task_ssm);
 
   /* abort the in-flight action (if any) and signal readiness to suspend; the
    * client re-opens the sensor fresh on wake. Cancelling the device-wide
@@ -5100,6 +5109,24 @@ synatlsmoc_suspend (FpDevice *device)
   if (cancellable)
     g_cancellable_cancel (cancellable);
   fpi_device_suspend_complete (device, NULL);
+}
+
+static void
+synatlsmoc_resume (FpDevice *device)
+{
+  FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
+
+  fp_dbg ("Resume");
+  /* TEMPORARY diagnostic (stuck-claim-after-sleep): confirm the on-wake resume
+   * reaches the driver and what task state it sees. */
+  fp_warn ("Resume: task_ssm=%p", (void *) self->task_ssm);
+
+  /* On wake, abort any in-flight wait-for-events interrupt read that survived
+   * the suspend (defensive); the client re-opens the sensor fresh on wake. */
+  if (self->interrupt_cancellable)
+    g_cancellable_cancel (self->interrupt_cancellable);
+
+  fpi_device_resume_complete (device, NULL);
 }
 
 static void
@@ -5140,6 +5167,7 @@ fpi_device_synatlsmoc_class_init (FpiDeviceSynaTlsMocClass *klass)
   dev_class->close = synatlsmoc_close;
   dev_class->cancel = synatlsmoc_cancel;
   dev_class->suspend = synatlsmoc_suspend;
+  dev_class->resume = synatlsmoc_resume;
   dev_class->enroll = synatlsmoc_enroll;
   dev_class->verify = synatlsmoc_identify_verify;
   dev_class->identify = synatlsmoc_identify_verify;
