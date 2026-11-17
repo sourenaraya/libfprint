@@ -462,10 +462,6 @@ synatlsmoc_task_ssm_done (FpiSsm *ssm, FpDevice *device, GError *error)
 #endif
   FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
 
-  /* TEMPORARY diagnostic (stuck-claim-after-sleep): confirm when the in-flight
-   * task completes. */
-  fp_warn ("Task SSM done: %s", error ? error->message : "success");
-
   /* task_ssm is going to be freed by completion of SSM */
   g_assert (!self->task_ssm || self->task_ssm == ssm);
   self->task_ssm = NULL;
@@ -5094,12 +5090,7 @@ synatlsmoc_cancel (FpDevice *device)
 static void
 synatlsmoc_suspend (FpDevice *device)
 {
-  FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
-
   fp_dbg ("Suspend");
-  /* TEMPORARY diagnostic (stuck-claim-after-sleep): confirm the on-sleep
-   * suspend reaches the driver and what task state it sees. */
-  fp_warn ("Suspend: task_ssm=%p", (void *) self->task_ssm);
 
   /* abort the in-flight action (if any) and signal readiness to suspend; the
    * client re-opens the sensor fresh on wake. Cancelling the device-wide
@@ -5117,9 +5108,6 @@ synatlsmoc_resume (FpDevice *device)
   FpiDeviceSynaTlsMoc *self = FPI_DEVICE_SYNATLSMOC (device);
 
   fp_dbg ("Resume");
-  /* TEMPORARY diagnostic (stuck-claim-after-sleep): confirm the on-wake resume
-   * reaches the driver and what task state it sees. */
-  fp_warn ("Resume: task_ssm=%p", (void *) self->task_ssm);
 
   /* On wake, abort any in-flight wait-for-events interrupt read that survived
    * the suspend (defensive); the client re-opens the sensor fresh on wake. */
