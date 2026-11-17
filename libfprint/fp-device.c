@@ -1077,7 +1077,11 @@ fp_device_close (FpDevice           *device,
       return;
     }
 
-  if (priv->current_task || priv->is_suspended)
+  /* A close must be allowed while suspended: is_open is only cleared by a
+   * completed close, so a close rejected here would never run and the device
+   * would stay marked open (and unusable) after resume. Closing is
+   * best-effort teardown and always completes. */
+  if (priv->current_task)
     {
       g_task_return_error (task,
                            fpi_device_error_new (FP_DEVICE_ERROR_BUSY));
@@ -1131,7 +1135,10 @@ fp_device_close_finish (FpDevice     *device,
  * code of #FP_DEVICE_ERROR_BUSY before the suspend async routine finishes.
  *
  * Any operation started while the device is suspended will fail with
- * #FP_DEVICE_ERROR_BUSY, this includes calls to open or close the device.
+ * #FP_DEVICE_ERROR_BUSY, including calls to open the device. Closing a
+ * device is allowed while suspended: a close that is rejected would never
+ * clear the device's open state and the device would be unusable after
+ * resume.
  */
 void
 fp_device_suspend (FpDevice           *device,

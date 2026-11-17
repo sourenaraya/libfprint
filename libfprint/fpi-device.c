@@ -1680,10 +1680,16 @@ fpi_device_resume (FpDevice *device)
         }
       break;
 
+    case FPI_DEVICE_ACTION_CLOSE:
+      /* A close may be in flight here: it is allowed to start while
+       * suspended (see fp_device_close()). It completes on its own and
+       * clears is_open, so no driver resume hook is needed for it. */
+      fpi_device_resume_complete (device, NULL);
+      break;
+
     default:
     case FPI_DEVICE_ACTION_PROBE:
     case FPI_DEVICE_ACTION_OPEN:
-    case FPI_DEVICE_ACTION_CLOSE:
     case FPI_DEVICE_ACTION_DELETE:
     case FPI_DEVICE_ACTION_LIST:
     case FPI_DEVICE_ACTION_CLEAR_STORAGE:
